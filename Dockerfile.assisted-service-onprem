@@ -26,7 +26,7 @@ RUN chown $USER:$USER $WORK_DIR
 # ISO
 COPY --from=coreos-installer /usr/sbin/coreos-installer $WORK_DIR
 COPY --from=livecd /root/image/livecd.iso $WORK_DIR/livecd.iso
-COPY --from=installer-image-build /data/install_process.py $WORK_DIR
+COPY build/assisted-iso-create $WORK_DIR
 ENV COREOS_IMAGE=$WORK_DIR/livecd.iso
 
 # install config

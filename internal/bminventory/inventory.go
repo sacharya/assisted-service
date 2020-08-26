@@ -23,6 +23,9 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/openshift/assisted-service/pkg/auth"
+	"github.com/vincent-petithory/dataurl"
+
 	"github.com/openshift/assisted-service/internal/identity"
 
 	"github.com/danielerez/go-dns-client/pkg/dnsproviders"
@@ -40,7 +43,6 @@ import (
 	"github.com/openshift/assisted-service/internal/metrics"
 	"github.com/openshift/assisted-service/internal/network"
 	"github.com/openshift/assisted-service/models"
-	"github.com/openshift/assisted-service/pkg/auth"
 	"github.com/openshift/assisted-service/pkg/filemiddleware"
 	"github.com/openshift/assisted-service/pkg/generator"
 	logutil "github.com/openshift/assisted-service/pkg/log"
@@ -79,6 +81,7 @@ type Config struct {
 	AgentDockerImg       string            `envconfig:"AGENT_DOCKER_IMAGE" default:"quay.io/ocpmetal/assisted-installer-agent:latest"`
 	IgnitionGenerator    string            `envconfig:"IGNITION_GENERATE_IMAGE" default:"quay.io/ocpmetal/assisted-ignition-generator:latest"` // TODO: update the latest once the repository has git workflow
 	ServiceBaseURL       string            `envconfig:"SERVICE_BASE_URL"`
+	ServiceCaCert        string            `envconfig:"SERVICE_CA_CERT" default:""`
 	S3EndpointURL        string            `envconfig:"S3_ENDPOINT_URL" default:"http://10.35.59.36:30925"`
 	S3Bucket             string            `envconfig:"S3_BUCKET" default:"test"`
 	ImageExpirationTime  time.Duration     `envconfig:"IMAGE_EXPIRATION_TIME" default:"4h"`
@@ -141,7 +144,7 @@ const ignitionConfigFormat = `{
     "units": [{
       "name": "agent.service",
       "enabled": true,
-      "contents": "[Service]\nType=simple\nRestart=always\nRestartSec=3\nStartLimitIntervalSec=0\nEnvironment=HTTP_PROXY={{.HTTPProxy}}\nEnvironment=http_proxy={{.HTTPProxy}}\nEnvironment=HTTPS_PROXY={{.HTTPSProxy}}\nEnvironment=https_proxy={{.HTTPSProxy}}\nEnvironment=NO_PROXY={{.NoProxy}}\nEnvironment=no_proxy={{.NoProxy}}\nEnvironment=PULL_SECRET_TOKEN={{.PullSecretToken}}\nTimeoutStartSec={{.AgentTimeoutStartSec}}\nExecStartPre=podman run --privileged --rm -v /usr/local/bin:/hostbin {{.AgentDockerImg}} cp /usr/bin/agent /hostbin\nExecStart=/usr/local/bin/agent --url {{.ServiceBaseURL}} --cluster-id {{.clusterId}} --agent-version {{.AgentDockerImg}} --insecure={{.SkipCertVerification}}\n\n[Install]\nWantedBy=multi-user.target"
+      "contents": "[Service]\nType=simple\nRestart=always\nRestartSec=3\nStartLimitIntervalSec=0\nEnvironment=HTTP_PROXY={{.HTTPProxy}}\nEnvironment=http_proxy={{.HTTPProxy}}\nEnvironment=HTTPS_PROXY={{.HTTPSProxy}}\nEnvironment=https_proxy={{.HTTPSProxy}}\nEnvironment=NO_PROXY={{.NoProxy}}\nEnvironment=no_proxy={{.NoProxy}}\nEnvironment=PULL_SECRET_TOKEN={{.PullSecretToken}}\nTimeoutStartSec={{.AgentTimeoutStartSec}}\nExecStartPre=podman run --privileged --rm -v /usr/local/bin:/hostbin {{.AgentDockerImg}} cp /usr/bin/agent /hostbin\nExecStart=/usr/local/bin/agent --url {{.ServiceBaseURL}} --cluster-id {{.clusterId}} --agent-version {{.AgentDockerImg}} --insecure={{.SkipCertVerification}} {{if .ServiceCaCert}}--cacert /etc/pki/ca-trust/source/anchors/service-ca-cert.crt{{end}}\n\n[Install]\nWantedBy=multi-user.target"
     }]
   },
   "storage": {
@@ -171,6 +174,15 @@ const ignitionConfigFormat = `{
 	      "name": "root"
 	  },
 	  "contents": { "source": "data:,{{.RH_ROOT_CA}}" }
+	}{{end}}{{if .ServiceCaCert}},
+	{
+	  "path": "/etc/pki/ca-trust/source/anchors/service-ca-cert.crt",
+	  "mode": 420,
+	  "overwrite": true,
+	  "user": {
+		"name": "root"
+	  },
+	  "contents": { "source": "{{.ServiceCaCert}}" }
 	}{{end}}]
   }
 }`
@@ -240,6 +252,14 @@ func (b *bareMetalInventory) updatePullSecret(pullSecret string, log logrus.Fiel
 }
 
 func (b *bareMetalInventory) formatIgnitionFile(cluster *common.Cluster, params installer.GenerateClusterISOParams) (string, error) {
+	var caCertData []byte
+	var err error
+	if b.ServiceCaCert != "" {
+		caCertData, err = ioutil.ReadFile(b.ServiceCaCert)
+		if err != nil {
+			return "", err
+		}
+	}
 	creds, err := validations.ParsePullSecret(cluster.PullSecret)
 	if err != nil {
 		return "", err
@@ -271,6 +291,7 @@ func (b *bareMetalInventory) formatIgnitionFile(cluster *common.Cluster, params 
 		"NoProxy":              cluster.NoProxy,
 		"SkipCertVerification": strconv.FormatBool(b.SkipCertVerification),
 		"AgentTimeoutStartSec": strconv.FormatInt(int64(b.AgentTimeoutStart.Seconds()), 10),
+		"ServiceCaCert":        dataurl.EncodeBytes(caCertData),
 	}
 	tmpl, err := template.New("ignitionConfig").Parse(ignitionConfigFormat)
 	if err != nil {

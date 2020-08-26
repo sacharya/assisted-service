@@ -52,7 +52,7 @@ func (i *installCmd) GetStep(ctx context.Context, host *models.Host) (*models.St
 		role = models.HostRoleBootstrap
 	}
 
-	cmdArgsTmpl := "podman run -v /dev:/dev:rw -v /opt:/opt:rw -v /run/systemd/journal/socket:/run/systemd/journal/socket --privileged --pid=host --net=host " +
+	cmdArgsTmpl := "podman run -v /dev:/dev:rw -v /opt:/opt:rw {{if .SERVICE_CA_CERT}}-v {{.SERVICE_CA_CERT}}:{{.SERVICE_CA_CERT}}:rw {{end}}-v /run/systemd/journal/socket:/run/systemd/journal/socket --privileged --pid=host --net=host " +
 		"-v /var/log:/var/log:rw --env PULL_SECRET_TOKEN --name assisted-installer {{.INSTALLER}} --role {{.ROLE}} --cluster-id {{.CLUSTER_ID}} " +
 		"--boot-device {{.BOOT_DEVICE}} --host-id {{.HOST_ID}} --openshift-version {{.OPENSHIFT_VERSION}} " +
 		"--controller-image {{.CONTROLLER_IMAGE}} --url {{.BASE_URL}} --insecure={{.SKIP_CERT_VERIFICATION}} --agent-image {{.AGENT_IMAGE}}"
@@ -93,6 +93,11 @@ func (i *installCmd) GetStep(ctx context.Context, host *models.Host) (*models.St
 			cmdArgsTmpl = cmdArgsTmpl + " --no-proxy {{.NO_PROXY}}"
 			data["NO_PROXY"] = cluster.NoProxy
 		}
+	}
+
+	if i.instructionConfig.ServiceCaCert != "" {
+		cmdArgsTmpl = cmdArgsTmpl + " --cacert {{.SERVICE_CA_CERT}}"
+		data["SERVICE_CA_CERT"] = "/etc/pki/ca-trust/source/anchors/service-ca-cert.crt"
 	}
 
 	// added to run upload logs if install command fails

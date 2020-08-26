@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,21 +46,23 @@ type Generator interface {
 }
 
 type installerGenerator struct {
-	log          logrus.FieldLogger
-	workDir      string
-	cluster      *common.Cluster
-	releaseImage string
-	installerDir string
+	log           logrus.FieldLogger
+	workDir       string
+	cluster       *common.Cluster
+	releaseImage  string
+	installerDir  string
+	serviceCACert string
 }
 
 // NewGenerator returns a generator that can generate ignition files
-func NewGenerator(workDir string, installerDir string, cluster *common.Cluster, releaseImage string, log logrus.FieldLogger) Generator {
+func NewGenerator(workDir string, installerDir string, cluster *common.Cluster, releaseImage string, serviceCACert string, log logrus.FieldLogger) Generator {
 	return &installerGenerator{
-		cluster:      cluster,
-		log:          log,
-		releaseImage: releaseImage,
-		workDir:      workDir,
-		installerDir: installerDir,
+		cluster:       cluster,
+		log:           log,
+		releaseImage:  releaseImage,
+		workDir:       workDir,
+		installerDir:  installerDir,
+		serviceCACert: serviceCACert,
 	}
 }
 
@@ -114,6 +117,12 @@ func (g *installerGenerator) Generate(installConfig []byte) error {
 	bootstrapPath := filepath.Join(g.workDir, "bootstrap.ign")
 	err = g.updateBootstrap(bootstrapPath)
 	if err != nil {
+		return err
+	}
+
+	err = g.updateIgnitions()
+	if err != nil {
+		g.log.Error(err)
 		return err
 	}
 
@@ -354,6 +363,28 @@ func (g *installerGenerator) modifyBMHFile(file *config_31_types.File, bmh *bmh_
 	return nil
 }
 
+func (g *installerGenerator) updateIgnitions() error {
+	masterPath := filepath.Join(g.workDir, "master.ign")
+	caCertFile := g.serviceCACert
+
+	if caCertFile != "" {
+		err := setCACertInIgnition(models.HostRoleMaster, masterPath, g.workDir, caCertFile)
+		if err != nil {
+			return errors.Wrapf(err, "error writing master ignition files")
+		}
+	}
+
+	workerPath := filepath.Join(g.workDir, "worker.ign")
+	if caCertFile != "" {
+		err := setCACertInIgnition(models.HostRoleWorker, workerPath, g.workDir, caCertFile)
+		if err != nil {
+			return errors.Wrapf(err, "error writing worker ignition files")
+		}
+	}
+
+	return nil
+}
+
 // sortHosts sorts hosts into masters and workers, excluding disabled hosts
 func sortHosts(hosts []*models.Host) ([]*models.Host, []*models.Host) {
 	masters := []*models.Host{}
@@ -392,5 +423,79 @@ func uploadToS3(ctx context.Context, workDir string, clusterID string, s3Client 
 		log.Infof("Uploaded file %s as object %s", fullPath, key)
 	}
 
+	return nil
+}
+
+func parseIgnitionFile(configBytes []byte) (*config_31_types.Config, error) {
+	config, _, err := config_31.Parse(configBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing ignition: %v", err)
+	}
+
+	return &config, nil
+}
+
+func writeIgnitionFile(path string, config *config_31_types.Config) error {
+	updatedBytes, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+
+	err = ioutil.WriteFile(path, updatedBytes, 0600)
+	if err != nil {
+		return errors.Wrapf(err, "error writing file %s", path)
+	}
+
+	return nil
+}
+
+func setFileInIgnition(config *config_31_types.Config, filePath string, fileContents string, mode int) error {
+	rootUser := "root"
+	file := config_31_types.File{
+		Node: config_31_types.Node{
+			Path:      filePath,
+			Overwrite: nil,
+			Group:     config_31_types.NodeGroup{},
+			User:      config_31_types.NodeUser{Name: &rootUser},
+		},
+		FileEmbedded1: config_31_types.FileEmbedded1{
+			Append: []config_31_types.Resource{},
+			Contents: config_31_types.Resource{
+				Source: &fileContents,
+			},
+			Mode: &mode,
+		},
+	}
+	config.Storage.Files = append(config.Storage.Files, file)
+	return nil
+}
+
+func setCACertInIgnition(role models.HostRole, path string, workDir string, caCertFile string) error {
+	configBytes, err := ioutil.ReadFile(path)
+	if err != nil {
+		return errors.Wrapf(err, "error reading file %s", path)
+	}
+
+	config, err := parseIgnitionFile(configBytes)
+	if err != nil {
+		return err
+	}
+
+	var caCertData []byte
+	caCertData, err = ioutil.ReadFile(caCertFile)
+	if err != nil {
+		return err
+	}
+
+	err = setFileInIgnition(config, common.ServiceCACert, fmt.Sprintf("data:,%s", url.PathEscape(string(caCertData))), 420)
+	if err != nil {
+		return err
+	}
+
+	fileName := fmt.Sprintf("%s.ign", role)
+	err = writeIgnitionFile(filepath.Join(workDir, fileName), config)
+	if err != nil {
+		return errors.Wrapf(err, "failed to write ignition for role %s", role)
+	}
 	return nil
 }

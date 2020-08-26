@@ -51,7 +51,7 @@ var _ = Describe("Ignition", func() {
 		err1 = ioutil.WriteFile(examplePath, []byte(bootstrap1), 0600)
 		Expect(err1).NotTo(HaveOccurred())
 
-		g := NewGenerator(workDir, installerCacheDir, cluster, "", log).(*installerGenerator)
+		g := NewGenerator(workDir, installerCacheDir, cluster, "", "", log).(*installerGenerator)
 		err = g.updateBootstrap(examplePath)
 
 		bootstrapBytes, _ := ioutil.ReadFile(examplePath)

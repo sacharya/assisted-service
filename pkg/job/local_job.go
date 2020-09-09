@@ -40,7 +40,9 @@ func (j *localJob) Execute(pythonCommand string, pythonFilePath string, envVars 
 	cmd.Env = envVars
 	var out bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
+		log.Errorf("execute failed: %s", out.String())
 		log.Infoln("envVars: " + strings.Join(envVars, ","))
 		log.WithError(err).Errorf(pythonFilePath)
 		return err

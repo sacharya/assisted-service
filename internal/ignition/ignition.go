@@ -23,6 +23,8 @@ import (
 	k8sjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"k8s.io/client-go/kubernetes/scheme"
 
+	"github.com/vincent-petithory/dataurl"
+
 	"github.com/openshift/assisted-service/internal/common"
 	"github.com/openshift/assisted-service/internal/installercache"
 	"github.com/openshift/assisted-service/internal/network"
@@ -52,10 +54,11 @@ type installerGenerator struct {
 	releaseImage  string
 	installerDir  string
 	serviceCACert string
+	serviceIPs    string `envconfig:"ASSISTED_SERVICE_IPS" default:""`
 }
 
 // NewGenerator returns a generator that can generate ignition files
-func NewGenerator(workDir string, installerDir string, cluster *common.Cluster, releaseImage string, serviceCACert string, log logrus.FieldLogger) Generator {
+func NewGenerator(workDir string, installerDir string, cluster *common.Cluster, releaseImage string, serviceCACert string, serviceIPs string, log logrus.FieldLogger) Generator {
 	return &installerGenerator{
 		cluster:       cluster,
 		log:           log,
@@ -63,6 +66,7 @@ func NewGenerator(workDir string, installerDir string, cluster *common.Cluster, 
 		workDir:       workDir,
 		installerDir:  installerDir,
 		serviceCACert: serviceCACert,
+		serviceIPs:    serviceIPs,
 	}
 }
 
@@ -366,6 +370,7 @@ func (g *installerGenerator) modifyBMHFile(file *config_31_types.File, bmh *bmh_
 func (g *installerGenerator) updateIgnitions() error {
 	masterPath := filepath.Join(g.workDir, "master.ign")
 	caCertFile := g.serviceCACert
+	serviceIPs := g.serviceIPs
 
 	if caCertFile != "" {
 		err := setCACertInIgnition(models.HostRoleMaster, masterPath, g.workDir, caCertFile)
@@ -377,6 +382,17 @@ func (g *installerGenerator) updateIgnitions() error {
 	workerPath := filepath.Join(g.workDir, "worker.ign")
 	if caCertFile != "" {
 		err := setCACertInIgnition(models.HostRoleWorker, workerPath, g.workDir, caCertFile)
+		if err != nil {
+			return errors.Wrapf(err, "error writing worker ignition files")
+		}
+	}
+
+	if serviceIPs != "" {
+		err := setETCHostsInIgnition(models.HostRoleMaster, masterPath, g.workDir, serviceIPs)
+		if err != nil {
+			return errors.Wrapf(err, "error writing master ignition files")
+		}
+		err = setETCHostsInIgnition(models.HostRoleWorker, workerPath, g.workDir, serviceIPs)
 		if err != nil {
 			return errors.Wrapf(err, "error writing worker ignition files")
 		}
@@ -466,6 +482,14 @@ func setFileInIgnition(config *config_31_types.Config, filePath string, fileCont
 			Mode: &mode,
 		},
 	}
+	if filePath == "/etc/hosts" {
+		file.FileEmbedded1.Append = []config_31_types.Resource{
+			{
+				Source: &fileContents,
+			},
+		}
+		file.FileEmbedded1.Contents = config_31_types.Resource{}
+	}
 	config.Storage.Files = append(config.Storage.Files, file)
 	return nil
 }
@@ -488,6 +512,42 @@ func setCACertInIgnition(role models.HostRole, path string, workDir string, caCe
 	}
 
 	err = setFileInIgnition(config, common.ServiceCACert, fmt.Sprintf("data:,%s", url.PathEscape(string(caCertData))), 420)
+	if err != nil {
+		return err
+	}
+
+	fileName := fmt.Sprintf("%s.ign", role)
+	err = writeIgnitionFile(filepath.Join(workDir, fileName), config)
+	if err != nil {
+		return errors.Wrapf(err, "failed to write ignition for role %s", role)
+	}
+	return nil
+}
+
+func constructEtcHostsContents(serviceIPs string) string {
+	ips := strings.Split(serviceIPs, " ")
+	content := ""
+	for _, ip := range ips {
+		content = content + fmt.Sprintf(ip+" assisted-api.local.openshift.io\n")
+	}
+	fileContents := dataurl.EncodeBytes([]byte(content))
+	return fileContents
+}
+
+func setETCHostsInIgnition(role models.HostRole, path string, workDir string, serviceIPs string) error {
+	configBytes, err := ioutil.ReadFile(path)
+	if err != nil {
+		return errors.Wrapf(err, "error reading file %s", path)
+	}
+
+	config, err := parseIgnitionFile(configBytes)
+	if err != nil {
+		return err
+	}
+
+	fileContents := constructEtcHostsContents(serviceIPs)
+
+	err = setFileInIgnition(config, "/etc/hosts", fmt.Sprintf("data:,%s", fileContents), 420)
 	if err != nil {
 		return err
 	}

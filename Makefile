@@ -236,6 +236,28 @@ deploy-test: _verify_minikube generate-keys
 	export PUBLIC_CONTAINER_REGISTRIES="quay.io" && \
 	$(MAKE) _update-minikube deploy-wiremock deploy-all
 
+generate-onprem-environment:
+	echo "POSTGRESQL_DATABASE=installer" > onprem-environment
+	echo "POSTGRESQL_PASSWORD=admin" >> onprem-environment
+	echo "POSTGRESQL_USER=admin" >> onprem-environment
+	echo "DB_HOST=127.0.0.1" >> onprem-environment
+	echo "DB_PORT=5432" >> onprem-environment
+	echo "DB_USER=admin" >> onprem-environment
+	echo "DB_PASS=admin" >> onprem-environment
+	echo "DB_NAME=installer" >> onprem-environment
+	echo "SERVICE_BASE_URL=http://127.0.0.1:8090" >> onprem-environment
+	echo "DEPLOY_TARGET=onprem" >> onprem-environment
+	echo "DUMMY_IGNITION=false" >> onprem-environment
+	echo "OPENSHIFT_INSTALL_RELEASE_IMAGE=${OPENSHIFT_INSTALL_RELEASE_IMAGE}" >> onprem-environment
+
+generate-onprem-iso-ignition:
+	sed -i "s|OPENSHIFT_INSTALL_RELEASE_IMAGE=.*|OPENSHIFT_INSTALL_RELEASE_IMAGE=${OPENSHIFT_INSTALL_RELEASE_IMAGE}|" ./config/onprem-iso-fcc.yaml
+	podman run --rm -v ./config/onprem-iso-fcc.yaml:/config.fcc:z quay.io/coreos/fcct:release --pretty --strict /config.fcc > ./config/onprem-iso-config.ign
+
+verify-latest-onprem-config:
+	@echo "Verifying onprem config changes"
+	hack/verify-latest-onprem-config.sh
+
 deploy-onprem:
 	podman pod create --name assisted-installer -p 5432,8000,8090,8080
 	# These are required because when running on RHCOS livecd, the coreos-installer binary and

@@ -245,8 +245,9 @@ generate-onprem-environment:
 	echo "DB_USER=admin" >> onprem-environment
 	echo "DB_PASS=admin" >> onprem-environment
 	echo "DB_NAME=installer" >> onprem-environment
-	echo "SERVICE_BASE_URL=http://127.0.0.1:8090" >> onprem-environment
+	echo "SERVICE_BASE_URL=https://assisted-api.local.openshift.io:8443" >> onprem-environment
 	echo "DEPLOY_TARGET=onprem" >> onprem-environment
+	echo "SERVICE_CA_CERT_PATH=/data/nginx-selfsigned.crt" >> onprem-environment
 	echo "DUMMY_IGNITION=false" >> onprem-environment
 	echo "OPENSHIFT_INSTALL_RELEASE_IMAGE=${OPENSHIFT_INSTALL_RELEASE_IMAGE}" >> onprem-environment
 
@@ -259,7 +260,9 @@ verify-latest-onprem-config:
 	hack/verify-latest-onprem-config.sh
 
 deploy-onprem:
-	podman pod create --name assisted-installer -p 5432,8000,8090,8080
+	hack/create_certs.sh
+	hack/create_etc_hosts.sh
+	podman pod create --name assisted-installer -p 8443
 	# These are required because when running on RHCOS livecd, the coreos-installer binary and
 	# livecd are bind-mounted from the host into the assisted-service container at runtime.
 	[ -f livecd.iso ] || curl $(BASE_OS_IMAGE) -o livecd.iso
@@ -267,10 +270,14 @@ deploy-onprem:
 		-v .:/data -w /data --entrypoint /bin/bash \
 		quay.io/coreos/coreos-installer:v0.7.0 -c 'cp /usr/sbin/coreos-installer /data/coreos-installer'
 	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always --name db quay.io/ocpmetal/postgresql-12-centos7
-	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always -v $(PWD)/deploy/ui/nginx.conf:/opt/bitnami/nginx/conf/server_blocks/nginx.conf:z --name ui quay.io/ocpmetal/ocp-metal-ui:latest
+	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always \
+		-v $(PWD)/deploy/ui/nginx_ssl.conf:/opt/bitnami/nginx/conf/server_blocks/nginx.conf:z \
+		-v $(PWD)/build/etc/assisted-service/nginx-certs:/certs:z \
+		--name ui quay.io/ocpmetal/ocp-metal-ui:latest
 	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always --env DUMMY_IGNITION=$(DUMMY_IGNITION) \
 		-v ./livecd.iso:/data/livecd.iso:z \
 		-v ./coreos-installer:/data/coreos-installer:z \
+		-v $(PWD)/build/etc/assisted-service/nginx-certs/nginx-selfsigned.crt:/data/nginx-selfsigned.crt:z \
 		--restart always --name installer $(SERVICE)
 
 deploy-onprem-for-subsystem:

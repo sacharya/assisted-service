@@ -14,6 +14,7 @@ import (
 	"github.com/openshift/assisted-service/internal/assistedserviceiso"
 	"github.com/openshift/assisted-service/internal/imgexpirer"
 	"github.com/openshift/assisted-service/internal/network"
+	"github.com/openshift/assisted-service/internal/oc"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -161,10 +162,11 @@ func main() {
 	eventsHandler := events.New(db, log.WithField("pkg", "events"))
 	hwValidator := hardware.NewValidator(log.WithField("pkg", "validators"), Options.HWValidatorConfig)
 	connectivityValidator := connectivity.NewValidator(log.WithField("pkg", "validators"))
-	instructionApi := host.NewInstructionManager(log.WithField("pkg", "instructions"), db, hwValidator, Options.InstructionConfig, connectivityValidator)
+	instructionApi := host.NewInstructionManager(log.WithField("pkg", "instructions"), db, hwValidator, oc.NewRelease(), Options.InstructionConfig, connectivityValidator)
 
 	pullSecretValidator, err := validations.NewPullSecretValidator(Options.ValidationsConfig, []string{
 		Options.JobConfig.ReleaseImage,
+		Options.JobConfig.ReleaseImageMirror,
 		Options.BMConfig.AgentDockerImg,
 		Options.InstructionConfig.InstallerImage,
 		Options.InstructionConfig.ControllerImage,
@@ -173,6 +175,8 @@ func main() {
 		Options.InstructionConfig.FreeAddressesImage,
 		Options.InstructionConfig.DhcpLeaseAllocatorImage,
 		Options.InstructionConfig.APIVIPConnectivityCheckImage,
+		Options.InstructionConfig.ReleaseImage,
+		Options.InstructionConfig.ReleaseImageMirror,
 	}...)
 
 	if err != nil {

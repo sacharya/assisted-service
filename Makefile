@@ -42,6 +42,9 @@ ENABLE_AUTH := $(or ${ENABLE_AUTH},False)
 DELETE_PVC := $(or ${DELETE_PVC},False)
 PUBLIC_CONTAINER_REGISTRIES := $(or ${PUBLIC_CONTAINER_REGISTRIES},quay.io)
 
+REGISTRY := $(or ${REGISTRY},quay.io)
+REGISTRY_AUTH_FILE := $(or ${REGISTRY_AUTH_FILE},"")
+
 # We decided to have an option to change replicas count only while running in minikube
 # That line is checking if we run on minikube
 # check if SERVICE_REPLICAS_COUNT was set and if yes change default value to required one
@@ -255,9 +258,9 @@ deploy-onprem:
 	[ -f livecd.iso ] || curl $(BASE_OS_IMAGE) -o livecd.iso
 	[ -f coreos-installer ] || podman run --privileged --pull=always -it --rm \
 		-v .:/data -w /data --entrypoint /bin/bash \
-		quay.io/coreos/coreos-installer:v0.7.0 -c 'cp /usr/sbin/coreos-installer /data/coreos-installer'
-	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always --name db quay.io/ocpmetal/postgresql-12-centos7
-	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always -v $(PWD)/deploy/ui/nginx.conf:/opt/bitnami/nginx/conf/server_blocks/nginx.conf:z --name ui quay.io/ocpmetal/ocp-metal-ui:latest
+		$(REGISTRY)/coreos/coreos-installer:v0.7.0 -c 'cp /usr/sbin/coreos-installer /data/coreos-installer'
+	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always --name db $(REGISTRY)/ocpmetal/postgresql-12-centos7
+	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always -v $(PWD)/deploy/ui/nginx.conf:/opt/bitnami/nginx/conf/server_blocks/nginx.conf:z --name ui $(REGISTRY)/ocpmetal/ocp-metal-ui:latest
 	podman run -dt --pod assisted-installer --env-file onprem-environment --pull always --env DUMMY_IGNITION=$(DUMMY_IGNITION) \
 		-v ./livecd.iso:/data/livecd.iso:z \
 		-v ./coreos-installer:/data/coreos-installer:z \

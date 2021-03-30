@@ -19,14 +19,20 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	reflect "reflect"
 	"strings"
 	"time"
 
 	bmh_v1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	adiiov1alpha1 "github.com/openshift/assisted-service/internal/controller/api/v1alpha1"
 	"github.com/openshift/assisted-service/models"
+	hivev1 "github.com/openshift/hive/apis/hive/v1"
+	machinev1beta1 "github.com/openshift/machine-api-operator/pkg/apis/machine/v1beta1"
 	"github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -51,6 +57,8 @@ const (
 	BMH_INSTALL_ENV_LABEL           = "installenvs.adi.openshift.io"
 	BMH_INSPECT_ANNOTATION          = "inspect.metal3.io"
 	BMH_HARDWARE_DETAILS_ANNOTATION = "inspect.metal3.io/hardwaredetails"
+	MACHINE_ROLE                    = "machine.openshift.io/cluster-api-machine-role"
+	MACHINE_TYPE                    = "machine.openshift.io/cluster-api-machine-type"
 )
 
 // reconcileResult is an interface that encapsulates the result of a Reconcile
@@ -169,6 +177,10 @@ func (r *BMACReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		return result.Result()
 	}
 
+	// Only worker type is supported for day2 operations
+	if r.isDay2Worker(agent) {
+		result = r.reconcileSpokeBMH(ctx, bmh, agent)
+	}
 	return result.Result()
 }
 
@@ -465,6 +477,114 @@ func (r *BMACReconciler) findBMH(ctx context.Context, agent *adiiov1alpha1.Agent
 		}
 	}
 	return nil, nil
+}
+
+func (r *BMACReconciler) isDay2Worker(agent *adiiov1alpha1.Agent) bool {
+	return agent.Spec.Role == models.HostRoleWorker && agent.Spec.ClusterDeploymentName != nil
+}
+
+func (r *BMACReconciler) reconcileSpokeBMH(ctx context.Context, bmh *bmh_v1alpha1.BareMetalHost, agent *adiiov1alpha1.Agent) reconcileResult {
+	cdKey := types.NamespacedName{
+		Namespace: agent.Spec.ClusterDeploymentName.Namespace,
+		Name:      agent.Spec.ClusterDeploymentName.Name,
+	}
+	clusterDeployment := &hivev1.ClusterDeployment{}
+	if err := r.Get(ctx, cdKey, clusterDeployment); err != nil {
+		r.Log.WithError(err).Errorf("failed to get clusterDeployment resource %s/%s", cdKey.Namespace, cdKey.Name)
+		return reconcileError{err}
+	}
+
+	// Secret contains kubeconfig for the spoke cluster
+	secret := &corev1.Secret{}
+	name := fmt.Sprintf(adminKubeConfigStringTemplate, clusterDeployment.Name)
+	err := r.Get(ctx, types.NamespacedName{Namespace: clusterDeployment.Namespace, Name: name}, secret)
+	if err != nil && errors.IsNotFound(err) {
+		r.Log.WithError(err).Errorf("failed to get secret resource %s/%s", clusterDeployment.Namespace, name)
+		// If secret is not found, wait until a reconcile is trigged by a watch event
+		return reconcileComplete{}
+	} else if err != nil {
+		return reconcileError{err}
+	}
+
+	spokeClient, err := getSpokeClient(secret)
+	if err != nil {
+		r.Log.WithError(err).Errorf("failed to create spoke kubeclient")
+		return reconcileError{err}
+	}
+
+	machine, err := r.createSpokeMachine(ctx, spokeClient, bmh, clusterDeployment)
+	if err != nil {
+		r.Log.WithError(err).Errorf("failed to create or update spoke Machine")
+		return reconcileError{err}
+	}
+
+	bmhSpoke := &bmh_v1alpha1.BareMetalHost{}
+	err = spokeClient.Get(ctx, types.NamespacedName{Name: bmh.Name, Namespace: bmh.Namespace}, bmhSpoke)
+	if err != nil && errors.IsNotFound(err) {
+		bmhSpoke = &bmh_v1alpha1.BareMetalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      bmh.Name,
+				Namespace: bmh.Namespace,
+			},
+		}
+		bmhSpoke.Spec = bmh.Spec
+		bmhSpoke.Spec.ExternallyProvisioned = true
+		bmhSpoke.Spec.ConsumerRef.Name = machine.Name
+		bmhSpoke.Spec.ConsumerRef.Namespace = machine.Namespace
+		r.Log.Infof("Creating spoke BareMetalHost %s/%s for cluster %s", bmhSpoke.Namespace, bmhSpoke.Name, clusterDeployment.Name)
+		err = spokeClient.Create(ctx, bmhSpoke)
+		if err != nil {
+			r.Log.WithError(err).Errorf("failed to create spoke BareMetalHost %s/%s", bmhSpoke.Namespace, bmhSpoke.Name)
+			return reconcileError{err}
+		}
+	} else if err != nil {
+		return reconcileError{err}
+	}
+	updated := bmh.DeepCopy()
+	updated.Spec.ExternallyProvisioned = true
+	updated.Spec.ConsumerRef.Name = machine.Name
+	updated.Spec.ConsumerRef.Namespace = machine.Namespace
+	if !reflect.DeepEqual(updated.Spec, bmhSpoke.Spec) {
+		err = spokeClient.Update(ctx, updated)
+		if err != nil {
+			r.Log.WithError(err).Errorf("failed to update spoke BareMetalHost %s/%s", updated.Namespace, updated.Name)
+			return reconcileError{err}
+		}
+	}
+	return reconcileComplete{}
+}
+
+func (r *BMACReconciler) createSpokeMachine(ctx context.Context, spokeClient client.Client, bmh *bmh_v1alpha1.BareMetalHost, clusterDeployment *hivev1.ClusterDeployment) (*machinev1beta1.Machine, error) {
+	machine := &machinev1beta1.Machine{}
+	machineName := fmt.Sprintf("%s-%s", clusterDeployment.Name, bmh.Name)
+	err := spokeClient.Get(ctx, types.NamespacedName{Name: machineName, Namespace: bmh.Namespace}, machine)
+	if err != nil && errors.IsNotFound(err) {
+		machine = &machinev1beta1.Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      machineName,
+				Namespace: bmh.Namespace,
+			},
+		}
+		machine.Labels = AddLabel(machine.Labels, machinev1beta1.MachineClusterIDLabel, clusterDeployment.Name)
+		machine.Labels = AddLabel(machine.Labels, MACHINE_ROLE, string(models.HostRoleWorker))
+		machine.Labels = AddLabel(machine.Labels, MACHINE_TYPE, string(models.HostRoleWorker))
+		r.Log.Infof("Creating spoke Machine %s/%s for cluster %s", machine.Namespace, machine.Name, clusterDeployment.Name)
+		err = spokeClient.Create(ctx, machine)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, err
+	}
+
+	machine.Labels = AddLabel(machine.Labels, machinev1beta1.MachineClusterIDLabel, clusterDeployment.Name)
+	machine.Labels = AddLabel(machine.Labels, MACHINE_ROLE, string(models.HostRoleWorker))
+	machine.Labels = AddLabel(machine.Labels, MACHINE_TYPE, string(models.HostRoleWorker))
+	err = spokeClient.Update(ctx, machine)
+	if err != nil {
+		return nil, err
+	}
+	return machine, nil
 }
 
 func (r *BMACReconciler) SetupWithManager(mgr ctrl.Manager) error {

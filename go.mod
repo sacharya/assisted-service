@@ -22,7 +22,6 @@ require (
 	github.com/filanov/stateswitch v0.0.0-20200714113403-51a42a34c604
 	github.com/frankban/quicktest v1.11.3 // indirect
 	github.com/go-logr/logr v0.4.0 // indirect
-	github.com/go-logr/zapr v0.2.0 // indirect
 	github.com/go-openapi/errors v0.19.6
 	github.com/go-openapi/loads v0.19.5
 	github.com/go-openapi/runtime v0.19.20
@@ -33,10 +32,8 @@ require (
 	github.com/golang-collections/go-datastructures v0.0.0-20150211160725-59788d5eb259
 	github.com/golang/mock v1.4.4
 	github.com/google/renameio v0.1.0
-	github.com/golangci/golangci-lint v1.32.0 // indirect
 	github.com/google/uuid v1.1.2
 	github.com/googleapis/gnostic v0.5.1 // indirect
-	github.com/gophercloud/gophercloud v0.12.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.0
 	github.com/hashicorp/go-version v1.2.1
 	github.com/iancoleman/strcase v0.1.2
@@ -52,6 +49,7 @@ require (
 	github.com/openshift/client-go v0.0.0-20201020074620-f8fd44879f7c
 	github.com/openshift/custom-resource-status v0.0.0-20200602122900-c002fd1547ca
 	github.com/openshift/hive/apis v0.0.0-20210323190723-391a0f02748c
+	github.com/openshift/machine-api-operator v0.2.1-0.20201002104344-6abfb5440597
 	github.com/ory/dockertest/v3 v3.6.3
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pkg/errors v0.9.1
@@ -72,19 +70,21 @@ require (
 	gopkg.in/ini.v1 v1.51.0
 	gopkg.in/square/go-jose.v2 v2.3.1
 	gopkg.in/yaml.v2 v2.4.0
-	honnef.co/go/tools v0.0.1-2020.1.6 // indirect
-	k8s.io/api v0.20.0
+	k8s.io/api v0.20.5
 	k8s.io/apiextensions-apiserver v0.19.2 // indirect
-	k8s.io/apimachinery v0.20.0
+	k8s.io/apimachinery v0.20.5
 	k8s.io/client-go v12.0.0+incompatible
+	k8s.io/kubectl v0.20.5
 	k8s.io/utils v0.0.0-20201110183641-67b214c5f920
 	sigs.k8s.io/controller-runtime v0.6.2
-	sigs.k8s.io/controller-tools v0.4.1 // indirect
-	sigs.k8s.io/kustomize/kustomize/v3 v3.8.5 // indirect
 	sigs.k8s.io/yaml v1.2.0
+
 )
 
 replace (
 	github.com/metal3-io/baremetal-operator => github.com/openshift/baremetal-operator v0.0.0-20210309203657-2c1aca867039 // Use OpenShift fork
 	k8s.io/client-go => k8s.io/client-go v0.20.0
+	sigs.k8s.io/cluster-api-provider-aws => github.com/openshift/cluster-api-provider-aws v0.2.1-0.20201022175424-d30c7a274820
+	sigs.k8s.io/cluster-api-provider-azure => github.com/openshift/cluster-api-provider-azure v0.1.0-alpha.3.0.20201016155852-4090a6970205
+
 )
